@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Question, generateSpeech } from '../services/gemini';
+import { Question } from '../services/gemini';
 import { useFaceLandmarker, Team, Answer } from '../hooks/useFaceLandmarker';
 import { cn } from '../utils';
 import { Trophy, Clock, Volume2, Maximize, X, AlertCircle } from 'lucide-react';
@@ -16,9 +16,47 @@ interface TeamState {
   score: number;
 }
 
+function TeamAvatar({ team, stream, isFrozen, isTilting }: { team: Team, stream: MediaStream | null, isFrozen: boolean, isTilting: boolean }) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  
+  useEffect(() => {
+    if (videoRef.current && stream) {
+      videoRef.current.srcObject = stream;
+    }
+  }, [stream]);
+
+  const isBlue = team === 'blue';
+
+  return (
+    <div className={cn(
+      "w-24 h-24 rounded-2xl overflow-hidden relative border-4 transition-all duration-300 shrink-0 bg-slate-800",
+      isBlue ? "border-blue-500" : "border-red-500",
+      isTilting && (isBlue ? "shadow-[0_0_20px_#3b82f6] scale-110" : "shadow-[0_0_20px_#ef4444] scale-110"),
+      isFrozen && "border-cyan-300 shadow-[0_0_15px_#67e8f9]"
+    )}>
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        muted
+        className="absolute top-0 h-full w-[200%] max-w-none object-cover scale-x-[-1]"
+        style={{
+          left: isBlue ? '0' : '-100%'
+        }}
+      />
+      {isFrozen && (
+        <div className="absolute inset-0 bg-blue-500/40 backdrop-blur-[2px] flex items-center justify-center z-10">
+          <span className="text-3xl drop-shadow-md">❄️</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function Game({ questions, onEnd }: GameProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const { players, isReady } = useFaceLandmarker(videoRef);
+  const [stream, setStream] = useState<MediaStream | null>(null);
   
   const [timeLeft, setTimeLeft] = useState(300); // 5 minutes
   const [tugScore, setTugScore] = useState(0); // -10 (Red wins) to +10 (Blue wins)
@@ -31,13 +69,15 @@ export function Game({ questions, onEnd }: GameProps) {
   // Setup webcam
   useEffect(() => {
     async function setupCamera() {
-      if (!videoRef.current) return;
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
+        const mediaStream = await navigator.mediaDevices.getUserMedia({
           video: { width: 1280, height: 720 },
           audio: false,
         });
-        videoRef.current.srcObject = stream;
+        setStream(mediaStream);
+        if (videoRef.current) {
+          videoRef.current.srcObject = mediaStream;
+        }
       } catch (err) {
         console.error("Error accessing webcam", err);
       }
@@ -82,6 +122,17 @@ export function Game({ questions, onEnd }: GameProps) {
     else if (tugScore <= -10) endGame(-10);
   }, [tugScore]);
 
+  const speak = (text: string) => {
+    if ('speechSynthesis' in window) {
+      // Cancel any ongoing speech to avoid queue buildup
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = 'vi-VN';
+      utterance.rate = 1.2;
+      window.speechSynthesis.speak(utterance);
+    }
+  };
+
   // Handle answers
   const handleAnswer = (team: Team, answer: Answer) => {
     if (!answer || winner) return;
@@ -102,14 +153,14 @@ export function Game({ questions, onEnd }: GameProps) {
         questionIndex: prev.questionIndex + 1,
         score: prev.score + 1
       }));
-      generateSpeech("Đúng rồi!").then(url => { if (url) new Audio(url).play(); });
+      speak("Đúng rồi!");
     } else {
       // Incorrect -> Freeze for 3 seconds
       setState(prev => ({
         ...prev,
         frozenUntil: now + 3000
       }));
-      generateSpeech("Sai rồi!").then(url => { if (url) new Audio(url).play(); });
+      speak("Sai rồi!");
     }
   };
 
@@ -136,7 +187,7 @@ export function Game({ questions, onEnd }: GameProps) {
   const renderTeamArea = (team: Team) => {
     const state = team === 'blue' ? blueState : redState;
     const player = team === 'blue' ? players.blue : players.red;
-    const isFrozen = state.frozenUntil && Date.now() < state.frozenUntil;
+    const isFrozen = state.frozenUntil !== null && Date.now() < state.frozenUntil;
     const question = questions[state.questionIndex % questions.length];
 
     const isBlue = team === 'blue';
@@ -163,10 +214,18 @@ export function Game({ questions, onEnd }: GameProps) {
         )}
 
         {/* Header */}
-        <div className="flex justify-between items-center mb-6 z-10">
-          <h2 className={cn("text-4xl font-black tracking-wide drop-shadow-sm", titleColor)}>
-            {isBlue ? 'Đội Xanh' : 'Đội Đỏ'}
-          </h2>
+        <div className="flex justify-between items-center mb-6 z-30 relative">
+          <div className="flex items-center gap-4">
+            <TeamAvatar 
+              team={team} 
+              stream={stream} 
+              isFrozen={isFrozen} 
+              isTilting={!!player.selectedAnswer} 
+            />
+            <h2 className={cn("text-4xl font-black tracking-wide drop-shadow-sm", titleColor)}>
+              {isBlue ? 'Đội Xanh' : 'Đội Đỏ'}
+            </h2>
+          </div>
           <div className={cn("text-5xl font-black px-6 py-2 rounded-2xl shadow-inner", scoreBg, scoreText)}>
             {state.score}
           </div>
@@ -174,7 +233,7 @@ export function Game({ questions, onEnd }: GameProps) {
 
         {/* Question Card */}
         <div className={cn(
-          "flex-1 flex flex-col items-center justify-center p-8 rounded-3xl mb-6 relative border border-white/10 shadow-lg",
+          "flex-1 flex flex-col items-center justify-center p-8 rounded-3xl mb-6 relative border border-white/10 shadow-lg z-10",
           isBlue ? "bg-[#1e293b]" : "bg-[#991b1b]"
         )}>
            <h3 className="text-3xl font-bold text-white text-center leading-relaxed">
@@ -183,7 +242,7 @@ export function Game({ questions, onEnd }: GameProps) {
         </div>
 
         {/* Options */}
-        <div className="grid grid-cols-2 gap-4 z-10">
+        <div className="grid grid-cols-2 gap-4 z-10 relative">
           <div className={cn(
             "p-6 rounded-2xl flex flex-col items-center justify-center text-center transition-all relative overflow-hidden",
             player.selectedAnswer === 'A' ? "bg-green-100 scale-95 shadow-inner" : "bg-[#f1f5f9] shadow-[0_8px_0_#cbd5e1] active:translate-y-2 active:shadow-none"
@@ -214,6 +273,18 @@ export function Game({ questions, onEnd }: GameProps) {
     );
   };
 
+  const toggleFullscreen = () => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().catch((err) => {
+        console.error(`Error attempting to enable fullscreen: ${err.message}`);
+      });
+    } else {
+      if (document.exitFullscreen) {
+        document.exitFullscreen();
+      }
+    }
+  };
+
   return (
     <div className="relative w-full h-screen bg-[#1e1b2e] overflow-hidden flex flex-col font-sans p-6 gap-6">
       {/* Background Video (Mirrored) */}
@@ -241,7 +312,7 @@ export function Game({ questions, onEnd }: GameProps) {
             <Volume2 className="w-5 h-5" />
             Tắt Âm
           </button>
-          <button className="flex items-center gap-2 px-4 py-2 bg-[#111827] border border-slate-600 rounded-xl text-white font-bold hover:bg-slate-800 transition-colors">
+          <button onClick={toggleFullscreen} className="flex items-center gap-2 px-4 py-2 bg-[#111827] border border-slate-600 rounded-xl text-white font-bold hover:bg-slate-800 transition-colors">
             <Maximize className="w-5 h-5" />
             Toàn Màn Hình
           </button>
