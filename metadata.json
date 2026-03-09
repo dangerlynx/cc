@@ -1,0 +1,5 @@
+{
+  "name": "Cuộc chiến nghiêng đầu (Head Tilt Tug-of-War)",
+  "description": "A warm-up game for teachers using facial recognition. Two teams compete by tilting their heads to answer questions.",
+  "requestFramePermissions": ["camera", "microphone"]
+}
